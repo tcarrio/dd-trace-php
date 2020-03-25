@@ -580,3 +580,72 @@ void ddtrace_opcode_mshutdown(void) {
 
     zend_set_user_opcode_handler(ZEND_EXIT, NULL);
 }
+
+// todo: refactor and merge with _dd_should_trace_call
+static bool _dd_should_trace_fbc(zval *This, zend_function *fbc, ddtrace_dispatch_t **dispatch) {
+    if (DDTRACE_G(disable) || DDTRACE_G(disable_in_current_request) || DDTRACE_G(class_lookup) == NULL ||
+        DDTRACE_G(function_lookup) == NULL || !fbc) {
+        return false;
+    }
+
+    // Don't trace closures
+    if (fbc->common.fn_flags & ZEND_ACC_CLOSURE) {
+        return false;
+    }
+
+    zval fname;
+    if (fbc->common.function_name) {
+        ZVAL_STR_COPY(&fname, fbc->common.function_name);
+    } else {
+        return false;
+    }
+
+    *dispatch = ddtrace_find_dispatch(This, fbc, &fname);
+    zval_ptr_dtor(&fname);
+    if (!*dispatch || (*dispatch)->busy) {
+        return false;
+    }
+    if (ddtrace_tracer_is_limited() && ((*dispatch)->options & DDTRACE_DISPATCH_INSTRUMENT_WHEN_LIMITED) == 0) {
+        return false;
+    }
+
+    return true;
+}
+
+static void (*_dd_prev_call_user_func)(INTERNAL_FUNCTION_PARAMETERS);
+ZEND_NAMED_FUNCTION(ddtrace_handler_call_user_func) {
+    zend_fcall_info fci;
+    zend_fcall_info_cache fci_cache;
+    if (zend_parse_parameters_ex(ZEND_PARSE_PARAMS_QUIET, ZEND_NUM_ARGS() TSRMLS_CC, "f*", &fci, &fci_cache,
+                                 &fci.params, &fci.param_count) == FAILURE) {
+        return;
+    }
+
+    // todo: is the fci_cache.function_handler the equivalent of fbc?
+    zval This;
+    ZVAL_OBJ(&This, fci_cache.object);
+    zval *this = fci_cache.object ? &This : NULL;
+    zend_function *function = fci_cache.function_handler;
+    ddtrace_dispatch_t *dispatch;
+    zend_bool should_trace = _dd_should_trace_fbc(this, function, &dispatch);
+    if (!should_trace || !(dispatch->options & (DDTRACE_DISPATCH_POSTHOOK | DDTRACE_DISPATCH_PREHOOK))) {
+        _dd_prev_call_user_func(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+        return;
+    }
+
+    ddtrace_span_t *span = ddtrace_open_span(NULL, dispatch);
+    if ((dispatch->options & DDTRACE_DISPATCH_PREHOOK) && _dd_call_sandboxed_tracing_closure(span, NULL) == false) {
+        ddtrace_drop_span();
+    }
+    _dd_prev_call_user_func(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+    _dd_end_span(span, return_value);
+}
+
+void ddtrace_call_user_func_init() {
+    zend_function *call_user_func =
+        zend_hash_str_find_ptr(CG(function_table), "call_user_func", sizeof("call_user_func") - 1);
+    if (call_user_func) {
+        _dd_prev_call_user_func = call_user_func->internal_function.handler;
+        call_user_func->internal_function.handler = ddtrace_handler_call_user_func;
+    }
+}

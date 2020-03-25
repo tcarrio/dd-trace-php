@@ -10,7 +10,7 @@
 
 ZEND_EXTERN_MODULE_GLOBALS(ddtrace)
 
-void ddtrace_engine_hooks_minit(void);
+void ddtrace_engine_hooks_minit(TSRMLS_D);
 void ddtrace_engine_hooks_mshutdown(void);
 
 void ddtrace_compile_time_reset(TSRMLS_D);

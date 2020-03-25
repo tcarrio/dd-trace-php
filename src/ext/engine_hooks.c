@@ -16,10 +16,15 @@ static void _compile_mshutdown(void);
 void ddtrace_opcode_minit(void);
 void ddtrace_opcode_mshutdown(void);
 
-void ddtrace_engine_hooks_minit(void) {
+void ddtrace_call_user_func_init(TSRMLS_D);
+
+void ddtrace_engine_hooks_minit(TSRMLS_D) {
     ddtrace_opcode_minit();
     _compile_minit();
+
+    ddtrace_call_user_func_init(TSRMLS_C);
 }
+
 void ddtrace_engine_hooks_mshutdown(void) {
     _compile_mshutdown();
     ddtrace_opcode_mshutdown();

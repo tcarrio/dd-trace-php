@@ -141,7 +141,7 @@ static PHP_MINIT_FUNCTION(ddtrace) {
 
     register_span_data_ce(TSRMLS_C);
 
-    ddtrace_engine_hooks_minit();
+    ddtrace_engine_hooks_minit(TSRMLS_C);
 
     ddtrace_coms_minit();
     ddtrace_coms_init_and_start_writer();
