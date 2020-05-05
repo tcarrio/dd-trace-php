@@ -68,6 +68,12 @@ final class CommonScenariosTest extends WebFrameworkTestCase
             SpanAssertion::exists('wp_maybe_load_widgets'),
             SpanAssertion::exists('create_initial_post_types'),
             SpanAssertion::exists('create_initial_taxonomies'),
+
+            SpanAssertion::exists('mysqli_query'),
+            SpanAssertion::exists('mysqli_query'),
+            SpanAssertion::exists('mysqli_query'),
+            SpanAssertion::exists('mysqli_query'),
+            SpanAssertion::exists('mysqli_real_connect'),
         ];
 
         $exit_children = [
@@ -161,6 +167,11 @@ final class CommonScenariosTest extends WebFrameworkTestCase
                                     ]),
                             ]),
                         SpanAssertion::exists('load_template'),
+                        SpanAssertion::exists('mysqli_query'),
+                        SpanAssertion::exists('mysqli_query'),
+                        SpanAssertion::exists('mysqli_query'),
+                        SpanAssertion::exists('mysqli_query'),
+                        SpanAssertion::exists('mysqli_real_connect'),
                         SpanAssertion::exists('get_header')
                             ->withChildren([
                                 SpanAssertion::exists('load_template')
@@ -248,6 +259,11 @@ final class CommonScenariosTest extends WebFrameworkTestCase
                         SpanAssertion::exists('wp_maybe_load_widgets'),
                         SpanAssertion::exists('create_initial_post_types'),
                         SpanAssertion::exists('create_initial_taxonomies'),
+                        SpanAssertion::exists('mysqli_query'),
+                        SpanAssertion::exists('mysqli_query'),
+                        SpanAssertion::exists('mysqli_query'),
+                        SpanAssertion::exists('mysqli_query'),
+                        SpanAssertion::exists('mysqli_real_connect'),
                     ]),
                 ],
             ]
