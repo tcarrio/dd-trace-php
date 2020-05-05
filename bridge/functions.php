@@ -72,6 +72,14 @@ function dd_wrap_autoloader()
 {
     dd_register_autoloader();
 
+    /* When DD_TRACE_NO_AUTOLOADER is on (default), we don't use an autoloader
+     * based workflow and instead immediately the setup and tracing.
+     */
+    if (dd_env_as_boolean('DD_TRACE_NO_AUTOLOADER', true)) {
+        require __DIR__ . '/dd_init.php';
+        return;
+    }
+
     /* CodeIgniter v2 does not use an autoloader. Tracing the CI_Hooks
      * constructor let's us set up the world because it is called very early
      * in CodeIgniter's startup process before we need to trace anything.
@@ -87,11 +95,6 @@ function dd_wrap_autoloader()
         return \dd_trace_forward_call();
     });
 
-    // User app is not using any autoloader we just import the initialization script
-    if (dd_env_as_boolean('DD_TRACE_NO_AUTOLOADER', false)) {
-        require __DIR__ . '/dd_init.php';
-        return;
-    }
 
     dd_trace('spl_autoload_register', function () {
         $originalAutoloaderRegistered = dd_trace_forward_call();
