@@ -1053,6 +1053,10 @@ PHP_FUNCTION(ddtrace_internal_function_handler) {
 }
 
 void ddtrace_op_array_handler(zend_op_array *op_array) {
+    if (DDTRACE_G(disable) || DDTRACE_G(disable_in_current_request)) {
+        return;
+    }
+
     // don't trace functions without names or closures
     if (!op_array->function_name || (op_array->fn_flags & ZEND_ACC_CLOSURE)) {
         return;
