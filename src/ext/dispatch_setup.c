@@ -37,6 +37,11 @@ void ddtrace_dispatch_init(TSRMLS_D) {
         ALLOC_HASHTABLE(DDTRACE_G(function_lookup));
         zend_hash_init(DDTRACE_G(function_lookup), 8, NULL, (dtor_func_t)ddtrace_class_lookup_release_compat, 0);
     }
+
+    if (!DDTRACE_G(unique_methods)) {
+        ALLOC_HASHTABLE(DDTRACE_G(unique_methods));
+        zend_hash_init(DDTRACE_G(unique_methods), 8, NULL, NULL, 0);
+    }
 }
 
 void ddtrace_dispatch_destroy(TSRMLS_D) {
@@ -50,6 +55,12 @@ void ddtrace_dispatch_destroy(TSRMLS_D) {
         zend_hash_destroy(DDTRACE_G(function_lookup));
         FREE_HASHTABLE(DDTRACE_G(function_lookup));
         DDTRACE_G(function_lookup) = NULL;
+    }
+
+    if (DDTRACE_G(unique_methods)) {
+        zend_hash_destroy(DDTRACE_G(unique_methods));
+        FREE_HASHTABLE(DDTRACE_G(unique_methods));
+        DDTRACE_G(unique_methods) = NULL;
     }
 }
 
@@ -83,6 +94,18 @@ zend_bool ddtrace_trace(zval *class_name, zval *function_name, zval *callable, u
         overridable_lookup = zend_hash_find_ptr(DDTRACE_G(class_lookup), Z_STR_P(class_name));
         if (!overridable_lookup) {
             overridable_lookup = ddtrace_new_class_lookup(class_name TSRMLS_CC);
+        }
+
+        if (DDTRACE_G(unique_methods)) {
+            size_t len = Z_STRLEN_P(function_name);
+            zend_string *lcname = zend_string_alloc(len, 0);
+            zend_str_tolower_copy(ZSTR_VAL(lcname), Z_STRVAL_P(function_name), len);
+            ZSTR_VAL(lcname)[len] = '\0';
+
+            zval tmp;
+            ZVAL_NULL(&tmp);
+            zend_hash_update(DDTRACE_G(unique_methods), lcname, &tmp);
+            zend_string_release(lcname);
         }
 #endif
     } else {

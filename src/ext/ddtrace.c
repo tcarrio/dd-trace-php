@@ -76,6 +76,10 @@ static void ddtrace_shutdown(struct _zend_extension *extension) {
 static void ddtrace_activate(void) {}
 static void ddtrace_deactivate(void) {}
 
+#if PHP_VERSION_ID >= 70000
+void ddtrace_op_array_handler(zend_op_array *op_array);
+#endif
+
 static zend_extension _dd_zend_extension_entry = {"ddtrace",
                                                   PHP_DDTRACE_VERSION,
                                                   "Datadog",
@@ -86,7 +90,11 @@ static zend_extension _dd_zend_extension_entry = {"ddtrace",
                                                   ddtrace_activate,
                                                   ddtrace_deactivate,
                                                   NULL,
+#if PHP_VERSION_ID < 70000
                                                   NULL,
+#else
+                                                  ddtrace_op_array_handler,
+#endif
                                                   NULL,
                                                   NULL,
                                                   NULL,

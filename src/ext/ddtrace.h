@@ -37,6 +37,7 @@ zend_bool strict_mode;
 uint32_t traces_group_id;
 HashTable *class_lookup;
 HashTable *function_lookup;
+HashTable *unique_methods;
 zend_bool log_backtrace;
 zend_bool backtrace_handler_already_run;
 dogstatsd_client dogstatsd_client;

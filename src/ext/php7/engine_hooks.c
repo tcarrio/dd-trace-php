@@ -120,13 +120,12 @@ static bool _dd_should_trace_call(zend_execute_data *call, zend_function *fbc, d
         !(fbc->common.fn_flags & (ZEND_ACC_CALL_VIA_TRAMPOLINE | ZEND_ACC_FAKE_CLOSURE))) {
         /* On PHP 7.4 the op_array reserved flag can only be set on compilation.
          * After that, you must use ZEND_OP_ARRAY_EXTENSION.
-         * We don't use it at compile-time yet, so only check this on < 7.4.
          */
-#if PHP_VERSION_ID < 70400
         if (fbc->op_array.reserved[ddtrace_resource] == DDTRACE_NOT_TRACED) {
             return false;
         }
-#else
+
+#if PHP_VERSION_ID >= 70400
         ddtrace_dispatch_t *cached_dispatch = DDTRACE_OP_ARRAY_EXTENSION(&fbc->op_array);
         if (cached_dispatch == DDTRACE_NOT_TRACED) {
             return false;
@@ -1051,4 +1050,38 @@ PHP_FUNCTION(ddtrace_internal_function_handler) {
                              ZSTR_VAL(EX(func)->common.function_name));
         }
     }
+}
+
+void ddtrace_op_array_handler(zend_op_array *op_array) {
+    // don't trace functions without names or closures
+    if (!op_array->function_name || (op_array->fn_flags & ZEND_ACC_CLOSURE)) {
+        return;
+    }
+
+#if PHP_VERSION_ID >= 70300
+    // avoid immutable
+    if (ddtrace_resource == -1 || (op_array->fn_flags & (ZEND_ACC_CALL_VIA_TRAMPOLINE | ZEND_ACC_FAKE_CLOSURE))) {
+        return;
+    }
+#else
+    if (ddtrace_resource == -1) {
+        return;
+    }
+#endif
+
+    // todo: add support for unique method names
+    HashTable *ht = CG(active_class_entry) ? DDTRACE_G(unique_methods) : DDTRACE_G(function_lookup);
+
+    ALLOCA_FLAG(use_heap)
+    size_t len = ZSTR_LEN(op_array->function_name);
+    char *str = ZSTR_VAL(op_array->function_name);
+    char *lcname = zend_str_tolower_copy(do_alloca(len + 1, use_heap), str, len);
+    zend_bool exists = zend_hash_str_exists(ht, lcname, len);
+    free_alloca(lcname, use_heap);
+
+    if (!exists) {
+        // todo: is this safe on PHP 7.4 with ZEND_ACC_IMMUTABLE?
+        op_array->reserved[ddtrace_resource] = DDTRACE_NOT_TRACED;
+    }
+
 }
