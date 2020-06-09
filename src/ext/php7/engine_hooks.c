@@ -1083,5 +1083,4 @@ void ddtrace_op_array_handler(zend_op_array *op_array) {
         // todo: is this safe on PHP 7.4 with ZEND_ACC_IMMUTABLE?
         op_array->reserved[ddtrace_resource] = DDTRACE_NOT_TRACED;
     }
-
 }
