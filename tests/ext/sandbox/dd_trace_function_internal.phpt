@@ -1,7 +1,5 @@
 --TEST--
 DDTrace\trace_function() can trace internal functions with internal spans
---SKIPIF--
-<?php if (PHP_VERSION_ID < 50500) die('skip PHP 5.4 not supported'); ?>
 --ENV--
 DD_TRACE_TRACED_INTERNAL_FUNCTIONS=array_sum
 --FILE--
@@ -14,6 +12,7 @@ var_dump(DDTrace\trace_function('array_sum', function (SpanData $span) {
 
 var_dump(array_sum([1, 3, 5]));
 
+dd_trace_noop();
 echo "---\n";
 
 var_dump(dd_trace_serialize_closed_spans());

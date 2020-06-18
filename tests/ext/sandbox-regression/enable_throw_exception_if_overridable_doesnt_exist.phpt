@@ -1,7 +1,5 @@
 --TEST--
 [Sandbox regression] Throw exception in strict mode if traced class does not exist
---SKIPIF--
-<?php if (PHP_VERSION_ID < 50500) die('skip PHP 5.4 not supported'); ?>
 --XFAIL--
 This functionality does not exist for sandboxed tracing closures
 --INI--

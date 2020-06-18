@@ -1,7 +1,6 @@
 --TEST--
 Auto-flushing will not instrument while flushing
 --SKIPIF--
-<?php if (PHP_VERSION_ID < 50500) die('skip: PHP 5.4 not supported'); ?>
 <?php if (PHP_VERSION_ID < 70000) die('skip: Auto flushing not supported on PHP 5'); ?>
 --ENV--
 DD_TRACE_AUTO_FLUSH_ENABLED=1

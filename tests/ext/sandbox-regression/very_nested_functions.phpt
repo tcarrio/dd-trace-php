@@ -2,8 +2,6 @@
 [Sandbox regression] Trace deeply-nested function calls
 --DESCRIPTION--
 This differs from the original dd_trace() test in that the original return value is not modified
---SKIPIF--
-<?php if (PHP_VERSION_ID < 50500) die('skip PHP 5.4 not supported'); ?>
 --FILE--
 <?php
 function test($a){
