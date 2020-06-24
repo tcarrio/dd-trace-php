@@ -165,8 +165,15 @@ zend_bool ddtrace_trace(zval *class_name, zval *function_name, zval *callable, u
     ddtrace_dispatch_t dispatch;
     memset(&dispatch, 0, sizeof(ddtrace_dispatch_t));
 
-    dispatch.callable = *callable;
-    zval_copy_ctor(&dispatch.callable);
+    zval callable_copy = *callable;
+    zval_copy_ctor(&callable_copy);
+    if (options & DDTRACE_DISPATCH_PREHOOK) {
+        dispatch.prehook = callable_copy;
+    } else {
+        ZEND_ASSERT(options & DDTRACE_DISPATCH_POSTHOOK);
+        dispatch.posthook = callable_copy;
+    }
+
     dispatch.options = options;
 
 #if PHP_VERSION_ID < 70000
