@@ -48,9 +48,6 @@ final class TracerTest extends BaseTestCase
 
     public function testGlobalTagsArePresentOnInternalSpansByFlushTime()
     {
-        if (Versions::phpVersionMatches('5.4')) {
-            $this->markTestSkipped('Internal spans are not enabled yet on PHP 5.4');
-        }
         \DDTrace\trace_method(
             'DDTrace\Tests\Integration\TracerTest',
             'dummyMethodGlobalTags',

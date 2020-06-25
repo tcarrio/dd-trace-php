@@ -44,8 +44,8 @@ abstract class IntegrationTestCase extends TestCase
     {
         $this->errorReportingBefore = error_reporting();
         parent::setUp();
-        if (Versions::phpVersionMatches('5.4') && self::isSandboxed()) {
-            $this->markTestSkipped('Sandboxed tests are skipped on PHP 5.4.');
+        if (Versions::phpVersionMatches('5.4') && !self::isSandboxed()) {
+            $this->markTestSkipped('Only sandboxed tests are supported on PHP 5.4.');
         }
     }
 

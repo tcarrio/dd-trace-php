@@ -223,7 +223,6 @@ static void ddtrace_execute(zend_op_array *op_array TSRMLS_DC) {
     bool free_retval = false;
 
     if ((should_trace = dispatch && _dd_should_trace_dispatch(dispatch TSRMLS_CC))) {
-
         dispatch->busy = 1;
         ddtrace_dispatch_copy(dispatch);
 
