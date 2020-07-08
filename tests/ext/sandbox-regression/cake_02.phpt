@@ -3,9 +3,7 @@ Test that we don't leak in a set-up similar to CakePHP
 --FILE--
 <?php
 
-dd_trace('DatadogDispatcher', 'dispatch', function () {
-    return dd_trace_forward_call();
-});
+DDTrace\trace_method('DatadogDispatcher', 'dispatch', function () {});
 
 class DatadogDispatcher
 {
