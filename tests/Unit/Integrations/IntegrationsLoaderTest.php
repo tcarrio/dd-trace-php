@@ -164,6 +164,14 @@ final class IntegrationsLoaderTest extends BaseTestCase
         \ksort($integrations);
         $loaded = $this->normalize(array_keys($integrations));
 
+        // remove any integrations that are deferred loaded:
+        if (\PHP_MAJOR_VERSION == 7) {
+            $deferred = ['elasticsearch' => 1];
+            $expected = \array_filter($expected, function ($integration) use ($deferred) {
+                return !isset($deferred[$integration]);
+            });
+        }
+
         // If this test fails you need to add an entry to IntegrationsLoader::LIBRARIES array.
         $this->assertEquals(array_values($expected), array_values($loaded));
     }

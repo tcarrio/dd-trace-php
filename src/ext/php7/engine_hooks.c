@@ -16,6 +16,7 @@
 #include "dispatch.h"
 #include "env_config.h"
 #include "logging.h"
+#include "span.h"
 
 ZEND_EXTERN_MODULE_GLOBALS(ddtrace)
 
@@ -25,11 +26,7 @@ int ddtrace_resource = -1;
 int ddtrace_op_array_extension = 0;
 #endif
 
-static void (*_prev_execute_internal)(zend_execute_data *execute_data, zval *return_value);
-static void _dd_execute_internal(zend_execute_data *execute_data, zval *return_value);
-
 // True gloals; only modify in minit/mshutdown
-static user_opcode_handler_t _prev_icall_handler;
 static user_opcode_handler_t _prev_ucall_handler;
 static user_opcode_handler_t _prev_fcall_handler;
 static user_opcode_handler_t _prev_fcall_by_name_handler;
@@ -88,17 +85,23 @@ static bool _dd_should_trace_helper(zend_execute_data *call, zend_function *fbc,
 
     ddtrace_dispatch_t *dispatch = ddtrace_find_dispatch(scope, &fname);
     if (dispatch != NULL && dispatch->options & DDTRACE_DISPATCH_DEFERRED_LOADER) {
-        // don't execute in the future
-        dispatch->options ^= DDTRACE_DISPATCH_DEFERRED_LOADER;
-
-        if (Z_TYPE(dispatch->deferred_load_function_name) != IS_NULL) {
+        if (!dispatch->busy && Z_TYPE(dispatch->deferred_load_function_name) != IS_NULL) {
             ddtrace_sandbox_backup backup = ddtrace_sandbox_begin();
 
+            // protect against the free when closure is ran so we can set busy = 1 if successful
+            ddtrace_dispatch_copy(dispatch);
             zval retval;
-            if (FAILURE != call_user_function(EG(function_table), NULL, &dispatch->deferred_load_function_name, &retval,
+            if (SUCCESS == call_user_function(EG(function_table), NULL, &dispatch->deferred_load_function_name, &retval,
                                               0, NULL)) {
+                // we never set this back to 0; once an integration has been deferred loaded it shouldn't try again
+                dispatch->busy = 1;
+                ddtrace_dispatch_release(dispatch);
+
                 // attempt to load newly set dispatch fo function
                 dispatch = ddtrace_find_dispatch(scope, &fname);
+            } else {
+                ddtrace_dispatch_release(dispatch);
+                dispatch = NULL;
             }
             zval_ptr_dtor(&retval);
 
@@ -123,6 +126,13 @@ static bool _dd_should_trace_runtime(ddtrace_dispatch_t *dispatch) {
     if (dispatch->busy) {
         return false;
     }
+
+    if (dispatch->options & (DDTRACE_DISPATCH_NON_TRACING)) {
+        // non-tracing types should trigger regardless of limited tracing mode
+        return true;
+    }
+
+    // todo: should this interact with non-tracing calls at all?
     if ((ddtrace_tracer_is_limited() && (dispatch->options & DDTRACE_DISPATCH_INSTRUMENT_WHEN_LIMITED) == 0)) {
         return false;
     }
@@ -254,12 +264,6 @@ static void _dd_span_attach_exception(ddtrace_span_fci *span_fci, ddtrace_except
     }
 }
 
-static void _dd_setup_fcall(zend_execute_data *execute_data, zend_fcall_info *fci, zval **result) {
-    fci->param_count = ZEND_CALL_NUM_ARGS(execute_data);
-    fci->params = fci->param_count ? ZEND_CALL_ARG(execute_data, 1) : NULL;
-    fci->retval = *result;
-}
-
 static bool _dd_execute_tracing_closure(zval *callable, zval *span_data, zend_execute_data *call, zval *user_args,
                                         zval *user_retval, zend_object *exception) {
     bool status = true;
@@ -356,7 +360,7 @@ static bool _dd_call_sandboxed_tracing_closure(ddtrace_span_fci *span_fci, zval 
     ddtrace_span_t *span = &span_fci->span;
     zval user_args;
 
-    _dd_copy_function_args(call, &user_args, dispatch->options & DDTRACE_DISPATCH_POSTHOOK);
+    _dd_copy_function_args(call, &user_args, !(dispatch->options & DDTRACE_DISPATCH_PREHOOK));
     ddtrace_sandbox_backup backup = ddtrace_sandbox_begin();
 
     bool keep_span = true;
@@ -392,8 +396,126 @@ static bool _dd_call_sandboxed_tracing_closure(ddtrace_span_fci *span_fci, zval 
     return keep_span;
 }
 
-static ddtrace_span_fci *ddtrace_prehook(zend_execute_data *call, ddtrace_dispatch_t *dispatch, zval *user_retval) {
-    bool continue_tracing = true;
+// See zend_copy_parameters_array
+static void dd_copy_prehook_args(zval *args, zend_execute_data *execute_data) {
+    zval *param_ptr = ZEND_CALL_ARG(execute_data, 1);
+    int arg_count = ZEND_CALL_NUM_ARGS(execute_data);
+
+    int param_count = arg_count;
+    array_init_size(args, param_count);
+
+    while (param_count-- > 0) {
+        if (Z_REFCOUNTED_P(param_ptr)) {
+            Z_ADDREF_P(param_ptr);
+        }
+        zend_hash_next_index_insert_new(Z_ARRVAL_P(args), param_ptr);
+        param_ptr++;
+    }
+}
+
+static ZEND_RESULT_CODE ddtrace_do_hook_function_prehook(zend_execute_data *call, ddtrace_dispatch_t *dispatch) {
+    ddtrace_sandbox_backup backup = ddtrace_sandbox_begin();
+    ddtrace_dispatch_copy(dispatch);  // protecting against dispatch being freed during php code execution
+    dispatch->busy = 1;               // guard against recursion, catching only topmost execution
+
+    zend_fcall_info fci = {0};
+    zend_fcall_info_cache fcc = {0};
+
+    char *error = NULL;
+    if (zend_fcall_info_init(&dispatch->prehook, 0, &fci, &fcc, NULL, &error) != SUCCESS) {
+        if (error) {
+            ddtrace_log_debug(error);
+            efree(error);
+            error = NULL;
+        }
+    }
+
+    zval args = {.u1.type_info = IS_NULL};
+
+    dd_copy_prehook_args(&args, call);
+
+    ZEND_RESULT_CODE status = zend_fcall_info_argn(&fci, 1, &args);
+    if (status != SUCCESS) {
+        goto clean_args;
+    }
+
+    zval retval = {.u1.type_info = IS_NULL};
+    fci.retval = &retval;
+
+    status = zend_call_function(&fci, &fcc);
+
+    zval_dtor(&retval);
+
+clean_args:
+    zend_fcall_info_args_clear(&fci, 1);
+    zval_dtor(&args);
+
+    dispatch->busy = 0;
+    ddtrace_dispatch_release(dispatch);
+
+    ddtrace_sandbox_end(&backup);
+
+    return status;
+}
+
+static ZEND_RESULT_CODE ddtrace_do_hook_method_prehook(zend_execute_data *call, ddtrace_dispatch_t *dispatch) {
+    ddtrace_sandbox_backup backup = ddtrace_sandbox_begin();
+    ddtrace_dispatch_copy(dispatch);  // protecting against dispatch being freed during php code execution
+    dispatch->busy = 1;               // guard against recursion, catching only topmost execution
+
+    zend_fcall_info fci = {0};
+    zend_fcall_info_cache fcc = {0};
+
+    char *error = NULL;
+    if (zend_fcall_info_init(&dispatch->prehook, 0, &fci, &fcc, NULL, &error) != SUCCESS) {
+        if (error) {
+            ddtrace_log_debug(error);
+            efree(error);
+            error = NULL;
+        }
+        // todo: goto where?
+    }
+
+    zend_object *called_this = zend_get_this_object(call);
+
+    zval This = {.u1.type_info = IS_NULL}, scope = {.u1.type_info = IS_NULL}, args = {.u1.type_info = IS_NULL};
+
+    if (called_this) {
+        ZVAL_OBJ(&This, called_this);
+    }
+
+    zend_class_entry *called_scope = zend_get_called_scope(call);
+    if (called_scope) {
+        ZVAL_STR(&scope, called_scope->name);
+    }
+
+    dd_copy_prehook_args(&args, call);
+
+    ZEND_RESULT_CODE status = zend_fcall_info_argn(&fci, 3, &This, &scope, &args);
+    if (status != SUCCESS) {
+        goto clean_args;
+    }
+
+    zval retval = {.u1.type_info = IS_NULL};
+    fci.retval = &retval;
+
+    status = zend_call_function(&fci, &fcc);
+
+    zval_dtor(&retval);
+
+clean_args:
+    zend_fcall_info_args_clear(&fci, 1);
+    zval_dtor(&args);
+
+    dispatch->busy = 0;
+    ddtrace_dispatch_release(dispatch);
+
+    ddtrace_sandbox_end(&backup);
+
+    return status;
+}
+
+static ddtrace_span_fci *ddtrace_fcall_begin_tracing_posthook(zend_execute_data *call, ddtrace_dispatch_t *dispatch) {
     ZEND_ASSERT(dispatch);
 
     ddtrace_dispatch_copy(dispatch);  // protecting against dispatch being freed during php code execution
@@ -404,15 +526,79 @@ static ddtrace_span_fci *ddtrace_prehook(zend_execute_data *call, ddtrace_dispat
     span_fci->dispatch = dispatch;
     ddtrace_open_span(span_fci);
 
-    if (dispatch->options & DDTRACE_DISPATCH_PREHOOK) {
-        continue_tracing = _dd_call_sandboxed_tracing_closure(span_fci, &dispatch->prehook, user_retval);
-        if (!continue_tracing) {
-            ddtrace_drop_top_open_span();
-            span_fci = NULL;
-        }
+    return span_fci;
+}
+
+static ddtrace_span_fci *ddtrace_fcall_begin_tracing_prehook(zend_execute_data *call, ddtrace_dispatch_t *dispatch) {
+    bool continue_tracing = true;
+    ZEND_ASSERT(dispatch);
+
+    // todo: extract common code to helper; weird to call posthook from prehook
+    ddtrace_span_fci *span_fci = ddtrace_fcall_begin_tracing_posthook(call, dispatch);
+    ZEND_ASSERT(span_fci);
+
+    zval user_retval = {.u1.type_info = IS_NULL};
+    continue_tracing = _dd_call_sandboxed_tracing_closure(span_fci, &dispatch->prehook, &user_retval);
+    if (!continue_tracing) {
+        ddtrace_drop_top_open_span();
+        span_fci = NULL;
     }
 
     return span_fci;
+}
+
+static ddtrace_span_fci *ddtrace_fcall_begin_non_tracing_posthook(zend_execute_data *call,
+                                                                  ddtrace_dispatch_t *dispatch) {
+    /* This is a hack. We put a span into the span stack so we can "tag" the
+     * frame as well as support close-at-exit functionality, but we want any
+     * children that this makes to be inherited by the currently active span,
+     * so we duplicate the span_id.
+     */
+    ddtrace_span_fci *span_fci = ecalloc(1, sizeof(*span_fci));
+    span_fci->execute_data = call;
+    span_fci->dispatch = dispatch;
+
+    span_fci->next = DDTRACE_G(open_spans_top);
+    DDTRACE_G(open_spans_top) = span_fci;
+
+    ddtrace_span_t *span = &span_fci->span;
+
+    // todo: can we get away without a SpanData object?
+    span->span_data = NULL;
+    span->trace_id = DDTRACE_G(trace_id);
+    span->span_id = ddtrace_peek_span_id(TSRMLS_C);
+
+    ddtrace_dispatch_copy(dispatch);  // protecting against dispatch being freed during php code execution
+    dispatch->busy = 1;               // guard against recursion, catching only topmost execution
+
+    return span_fci;
+}
+
+static ddtrace_span_fci *ddtrace_fcall_begin_non_tracing_prehook(zend_execute_data *call,
+                                                                 ddtrace_dispatch_t *dispatch) {
+    ZEND_ASSERT(dispatch);
+
+    if (call->func->common.scope) {
+        if (ddtrace_do_hook_method_prehook(call, dispatch) != SUCCESS) {
+            // todo: debug
+        }
+    } else {
+        if (ddtrace_do_hook_function_prehook(call, dispatch) != SUCCESS) {
+            // todo: debug
+        }
+    }
+    return NULL;
+}
+
+static ddtrace_span_fci *(*fcall_begin[])(zend_execute_data *call, ddtrace_dispatch_t *dispatch) = {
+    [DDTRACE_DISPATCH_POSTHOOK] = ddtrace_fcall_begin_tracing_posthook,
+    [DDTRACE_DISPATCH_POSTHOOK | DDTRACE_DISPATCH_NON_TRACING] = ddtrace_fcall_begin_non_tracing_posthook,
+    [DDTRACE_DISPATCH_PREHOOK] = ddtrace_fcall_begin_tracing_prehook,
+    [DDTRACE_DISPATCH_PREHOOK | DDTRACE_DISPATCH_NON_TRACING] = ddtrace_fcall_begin_non_tracing_prehook,
+};
+
+static ddtrace_span_fci *ddtrace_prehook(zend_execute_data *call, ddtrace_dispatch_t *dispatch) {
+    return (fcall_begin[dispatch->options & 3u])(call, dispatch);
 }
 
 void _dd_set_fqn(zval *zv, zend_execute_data *ex) {
@@ -451,141 +637,174 @@ static void _dd_set_default_properties(void) {
     }
 }
 
+static ZEND_RESULT_CODE ddtrace_do_hook_method_posthook(zend_execute_data *call, ddtrace_dispatch_t *dispatch,
+                                                        zval *user_retval) {
+    ddtrace_sandbox_backup backup = ddtrace_sandbox_begin();
+
+    zend_fcall_info fci = {0};
+    zend_fcall_info_cache fcc = {0};
+
+    char *error = NULL;
+    if (zend_fcall_info_init(&dispatch->posthook, 0, &fci, &fcc, NULL, &error) != SUCCESS) {
+        if (error) {
+            ddtrace_log_debug(error);
+            efree(error);
+            error = NULL;
+        }
+    }
+
+    zend_object *called_this = zend_get_this_object(call);
+
+    zval This = {.u1.type_info = IS_NULL}, scope = {.u1.type_info = IS_NULL}, args = {.u1.type_info = IS_NULL};
+    zval tmp_retval = {.u1.type_info = IS_NULL};
+
+    if (called_this) {
+        ZVAL_OBJ(&This, called_this);
+    }
+
+    zend_class_entry *called_scope = zend_get_called_scope(call);
+    if (called_scope) {
+        ZVAL_STR(&scope, called_scope->name);
+    }
+
+    dd_copy_prehook_args(&args, call);
+
+    if (!user_retval) {
+        user_retval = &tmp_retval;
+    }
+
+    ZEND_RESULT_CODE status = zend_fcall_info_argn(&fci, 4, &This, &scope, &args, user_retval);
+    if (status != SUCCESS) {
+        goto clean_args;
+    }
+
+    zval retval = {.u1.type_info = IS_NULL};
+    fci.retval = &retval;
+
+    status = zend_call_function(&fci, &fcc);
+
+    zval_dtor(&retval);
+
+clean_args:
+    zend_fcall_info_args_clear(&fci, 1);
+    zval_dtor(&args);
+
+    ddtrace_sandbox_end(&backup);
+
+    return status;
+}
+
+static ZEND_RESULT_CODE ddtrace_do_hook_function_posthook(zend_execute_data *call, ddtrace_dispatch_t *dispatch,
+                                                          zval *user_retval) {
+    ddtrace_sandbox_backup backup = ddtrace_sandbox_begin();
+
+    zend_fcall_info fci = {0};
+    zend_fcall_info_cache fcc = {0};
+
+    char *error = NULL;
+    if (zend_fcall_info_init(&dispatch->prehook, 0, &fci, &fcc, NULL, &error) != SUCCESS) {
+        if (error) {
+            ddtrace_log_debug(error);
+            efree(error);
+            error = NULL;
+        }
+    }
+
+    zval args = {.u1.type_info = IS_NULL}, tmp_retval = {.u1.type_info = IS_NULL};
+
+    dd_copy_prehook_args(&args, call);
+
+    if (!user_retval) {
+        user_retval = &tmp_retval;
+    }
+
+    ZEND_RESULT_CODE status = zend_fcall_info_argn(&fci, 2, &args, user_retval);
+    if (status != SUCCESS) {
+        goto clean_args;
+    }
+
+    zval retval = {.u1.type_info = IS_NULL};
+    fci.retval = &retval;
+
+    status = zend_call_function(&fci, &fcc);
+
+    zval_dtor(&retval);
+
+clean_args:
+    zend_fcall_info_args_clear(&fci, 1);
+    zval_dtor(&args);
+
+    ddtrace_sandbox_end(&backup);
+
+    return status;
+}
+
+static void ddtrace_fcall_end_tracing_posthook(ddtrace_span_fci *span_fci, zval *user_retval) {
+    ddtrace_dispatch_t *dispatch = span_fci->dispatch;
+    _dd_span_attach_exception(span_fci, EG(exception));
+
+    dd_trace_stop_span_time(&span_fci->span);
+
+    bool keep_span = _dd_call_sandboxed_tracing_closure(span_fci, &dispatch->posthook, user_retval);
+
+    if (keep_span) {
+        _dd_set_default_properties();
+        ddtrace_close_span();
+    } else {
+        ddtrace_drop_top_open_span();
+    }
+}
+
+static void ddtrace_fcall_end_non_tracing_posthook(ddtrace_span_fci *span_fci, zval *user_retval) {
+    zend_execute_data *call = span_fci->execute_data;
+    ddtrace_dispatch_t *dispatch = span_fci->dispatch;
+    if (call->func->common.scope) {
+        if (ddtrace_do_hook_method_posthook(call, dispatch, user_retval) != SUCCESS) {
+            // todo: debug
+        }
+    } else {
+        if (ddtrace_do_hook_function_posthook(call, dispatch, user_retval) != SUCCESS) {
+            // todo: debug
+        }
+    }
+
+    // drop the placeholder span -- we do not need it
+    DDTRACE_G(open_spans_top) = span_fci->next;
+    ddtrace_drop_span(span_fci);
+}
+
+static void ddtrace_fcall_end_tracing_prehook(ddtrace_span_fci *span_fci, zval *user_retval) {
+    PHP7_UNUSED(user_retval);
+    _dd_span_attach_exception(span_fci, EG(exception));
+
+    dd_trace_stop_span_time(&span_fci->span);
+
+    _dd_set_default_properties();
+    ddtrace_close_span();
+}
+
+static void ddtrace_fcall_end_non_tracing_prehook(ddtrace_span_fci *span_fci, zval *user_retval) {
+    // nothing to do
+    PHP7_UNUSED(span_fci, user_retval);
+}
+
+static void (*fcall_end[])(ddtrace_span_fci *span_fci, zval *user_retval) = {
+    [DDTRACE_DISPATCH_POSTHOOK] = ddtrace_fcall_end_tracing_posthook,
+    [DDTRACE_DISPATCH_POSTHOOK | DDTRACE_DISPATCH_NON_TRACING] = ddtrace_fcall_end_non_tracing_posthook,
+    [DDTRACE_DISPATCH_PREHOOK] = ddtrace_fcall_end_tracing_prehook,
+    [DDTRACE_DISPATCH_PREHOOK | DDTRACE_DISPATCH_NON_TRACING] = ddtrace_fcall_end_non_tracing_prehook,
+};
+
 static void ddtrace_posthook(zend_function *fbc, ddtrace_span_fci *span_fci, zval *user_retval) {
     if (span_fci == DDTRACE_G(open_spans_top)) {
         ddtrace_dispatch_t *dispatch = span_fci->dispatch;
-        _dd_span_attach_exception(span_fci, EG(exception));
-
-        dd_trace_stop_span_time(&span_fci->span);
-
-        bool keep_span = true;
-        if (dispatch->options & DDTRACE_DISPATCH_POSTHOOK) {
-            keep_span = _dd_call_sandboxed_tracing_closure(span_fci, &dispatch->posthook, user_retval);
-        }
-
-        if (keep_span) {
-            _dd_set_default_properties();
-            ddtrace_close_span();
-        } else {
-            ddtrace_drop_top_open_span();
-        }
+        (fcall_end[dispatch->options & 3u])(span_fci, user_retval);
     } else if (fbc && get_dd_trace_debug()) {
         ddtrace_log_errf("Cannot run tracing closure for %s(); spans out of sync", ZSTR_VAL(fbc->common.function_name));
     }
 }
 
-static void _dd_update_opcode_leave(zend_execute_data *execute_data) { EX(call) = EX(call)->prev_execute_data; }
-
-static void _dd_execute_fcall(ddtrace_dispatch_t *dispatch, zval *this, zend_execute_data *execute_data,
-                              zval **return_value_ptr) {
-    zend_fcall_info fci = {0};
-    zend_fcall_info_cache fcc = {0};
-    char *error = NULL;
-    zval closure;
-    INIT_ZVAL(closure);
-    zend_function *current_fbc = DDTRACE_G(original_context).fbc;
-    zend_class_entry *executed_method_class = NULL;
-    if (this) {
-        executed_method_class = Z_OBJCE_P(this);
-    }
-
-    zend_string *func_name = zend_string_init(ZEND_STRL(DDTRACE_CALLBACK_NAME), 0);
-    zend_create_closure(&closure, (zend_function *)zend_get_closure_method_def(&dispatch->callable),
-                        executed_method_class, executed_method_class, this);
-    if (zend_fcall_info_init(&closure, 0, &fci, &fcc, NULL, &error) != SUCCESS) {
-        if (error) {
-            efree(error);
-        }
-        goto _exit_cleanup;
-    }
-
-    _dd_setup_fcall(execute_data, &fci, return_value_ptr);
-
-    // Move this to closure zval before zend_fcall_info_init()
-    fcc.function_handler->common.function_name = func_name;
-
-    zend_class_entry *orig_scope = fcc.function_handler->common.scope;
-    fcc.function_handler->common.scope = DDTRACE_G(original_context).calling_fbc->common.scope;
-    fcc.calling_scope = DDTRACE_G(original_context).calling_fbc->common.scope;
-
-    zend_execute_data *prev_original_execute_data = DDTRACE_G(original_context).execute_data;
-    DDTRACE_G(original_context).execute_data = execute_data;
-
-    zend_call_function(&fci, &fcc);
-
-    DDTRACE_G(original_context).execute_data = prev_original_execute_data;
-
-    fcc.function_handler->common.scope = orig_scope;
-
-    zend_string_release(func_name);
-    if (fci.params) {
-        zend_fcall_info_args_clear(&fci, 0);
-    }
-
-_exit_cleanup:
-
-    if (this && (EX_CALL_INFO() & ZEND_CALL_RELEASE_THIS)) {
-        OBJ_RELEASE(Z_OBJ(execute_data->This));
-    }
-    OBJ_RELEASE(Z_OBJ(closure));
-    DDTRACE_G(original_context).fbc = current_fbc;
-}
-
-static void _dd_wrap_and_run(zend_execute_data *execute_data, ddtrace_dispatch_t *dispatch) {
-    zval *this = _dd_this(EX(call));
-    const zend_op *opline = EX(opline);
-
-    zval rv;
-    INIT_ZVAL(rv);
-
-    zval *return_value = (RETURN_VALUE_USED(opline) ? EX_VAR(EX(opline)->result.var) : &rv);
-    _dd_execute_fcall(dispatch, this, EX(call), &return_value);
-
-    if (!RETURN_VALUE_USED(opline)) {
-        zval_dtor(&rv);
-    }
-}
-
-static int _dd_opcode_default_dispatch(zend_execute_data *execute_data) {
-    if (!EX(opline)->opcode) {
-        return ZEND_USER_OPCODE_DISPATCH;
-    }
-    switch (EX(opline)->opcode) {
-        case ZEND_DO_ICALL:
-            if (_prev_icall_handler) {
-                return _prev_icall_handler(execute_data);
-            }
-            break;
-        case ZEND_DO_UCALL:
-            if (_prev_ucall_handler) {
-                return _prev_ucall_handler(execute_data);
-            }
-            break;
-        case ZEND_DO_FCALL:
-            if (_prev_fcall_handler) {
-                return _prev_fcall_handler(execute_data);
-            }
-            break;
-        case ZEND_DO_FCALL_BY_NAME:
-            if (_prev_fcall_by_name_handler) {
-                return _prev_fcall_by_name_handler(execute_data);
-            }
-            break;
-    }
-    return ZEND_USER_OPCODE_DISPATCH;
-}
-
 static void _dd_fcall_helper(zend_execute_data *call, ddtrace_dispatch_t *dispatch) {
-    /*
-    Internal functions are traced from the zend_execute_internal override for the sandbox API.
-    Ideally, we'd short-circuit early for internal functions, but since we have
-    to support the legacy API, we have to wait until after the dispatch hash table
-    lookup to determine if we can use zend_execute_internal (which only supports sandbox API).
-    */
-    if (call->func->type == ZEND_INTERNAL_FUNCTION) {
-        return;
-    }
-
 #if PHP_VERSION_ID < 70100
     /*
     For PHP < 7.1: The current execute_data gets replaced in the DO_FCALL handler and freed shortly
@@ -597,77 +816,7 @@ static void _dd_fcall_helper(zend_execute_data *call, ddtrace_dispatch_t *dispat
     }
 #endif
 
-    ddtrace_prehook(call, dispatch, NULL);
-}
-
-static int _dd_legacy_fcall_helper(zend_execute_data *execute_data, ddtrace_dispatch_t *dispatch) {
-    zend_uchar expected_opcode = EX(opline)->opcode;
-    int vm_retval = _dd_opcode_default_dispatch(execute_data);
-    if (vm_retval != ZEND_USER_OPCODE_DISPATCH || expected_opcode != EX(opline)->opcode) {
-        char *fname = (EX(call) && EX(call)->func) ? ZSTR_VAL(EX(call)->func->common.function_name) : "{unknown}";
-        ddtrace_log_debugf("A neighboring extension has altered the VM state for '%s()'; cannot reliably instrument",
-                           fname);
-        return vm_retval;
-    }
-
-    ddtrace_dispatch_copy(dispatch);  // protecting against dispatch being freed during php code execution
-    dispatch->busy = 1;               // guard against recursion, catching only topmost execution
-
-    // Store original context for forwarding the call from userland
-    zend_function *previous_fbc = DDTRACE_G(original_context).fbc;
-    zend_function *current_fbc = EX(call)->func;
-    DDTRACE_G(original_context).fbc = current_fbc;
-    zend_function *previous_calling_fbc = DDTRACE_G(original_context).calling_fbc;
-
-    DDTRACE_G(original_context).calling_fbc = current_fbc->common.scope ? current_fbc : execute_data->func;
-
-    zval *this = _dd_this(EX(call));
-
-    zend_object *previous_this = DDTRACE_G(original_context).this;
-    DDTRACE_G(original_context).this = this ? Z_OBJ_P(this) : NULL;
-    zend_class_entry *previous_calling_ce = DDTRACE_G(original_context).calling_ce;
-
-    if (DDTRACE_G(original_context).this) {
-        GC_ADDREF(DDTRACE_G(original_context).this);
-    }
-    DDTRACE_G(original_context).calling_ce = Z_OBJ(execute_data->This) ? Z_OBJ(execute_data->This)->ce : NULL;
-
-    _dd_wrap_and_run(execute_data, dispatch);
-    if (DDTRACE_G(original_context).this) {
-        GC_DELREF(DDTRACE_G(original_context).this);
-    }
-
-    // Restore original context
-    DDTRACE_G(original_context).calling_ce = previous_calling_ce;
-    DDTRACE_G(original_context).this = previous_this;
-    DDTRACE_G(original_context).calling_fbc = previous_calling_fbc;
-    DDTRACE_G(original_context).fbc = previous_fbc;
-
-    _dd_update_opcode_leave(execute_data);
-
-    dispatch->busy = 0;
-    ddtrace_dispatch_release(dispatch);
-
-    EX(opline)++;
-
-    return ZEND_USER_OPCODE_LEAVE;
-}
-
-/*
-We check that the opcode from the opline matches the one we expect in the handler because a
-neighboring extension could have incremented the opline before forwarding the handler to us.
-*/
-static int _dd_do_icall_handler(zend_execute_data *execute_data) {
-    ddtrace_dispatch_t *dispatch = NULL;
-    if (ZEND_DO_ICALL != EX(opline)->opcode || !EX(call)->func ||
-        !_dd_should_trace_call(EX(call), EX(call)->func, &dispatch)) {
-        return _prev_icall_handler ? _prev_icall_handler(execute_data) : ZEND_USER_OPCODE_DISPATCH;
-    }
-    if (dispatch->options & DDTRACE_DISPATCH_INNERHOOK) {
-        return _dd_legacy_fcall_helper(execute_data, dispatch);
-    }
-    _dd_fcall_helper(EX(call), dispatch);
-    return _prev_icall_handler ? _prev_icall_handler(execute_data) : ZEND_USER_OPCODE_DISPATCH;
+    ddtrace_prehook(call, dispatch);
 }
 
 static int _dd_do_ucall_handler(zend_execute_data *execute_data) {
@@ -676,24 +825,8 @@ static int _dd_do_ucall_handler(zend_execute_data *execute_data) {
         !_dd_should_trace_call(EX(call), EX(call)->func, &dispatch)) {
         return _prev_ucall_handler ? _prev_ucall_handler(execute_data) : ZEND_USER_OPCODE_DISPATCH;
     }
-    if (dispatch->options & DDTRACE_DISPATCH_INNERHOOK) {
-        return _dd_legacy_fcall_helper(execute_data, dispatch);
-    }
     _dd_fcall_helper(EX(call), dispatch);
     return _prev_ucall_handler ? _prev_ucall_handler(execute_data) : ZEND_USER_OPCODE_DISPATCH;
-}
-
-static int _dd_do_fcall_legacy_handler(zend_execute_data *execute_data) {
-    ddtrace_dispatch_t *dispatch = NULL;
-    if (ZEND_DO_FCALL != EX(opline)->opcode || !EX(call)->func ||
-        !_dd_should_trace_call(EX(call), EX(call)->func, &dispatch)) {
-        return _prev_fcall_handler ? _prev_fcall_handler(execute_data) : ZEND_USER_OPCODE_DISPATCH;
-    }
-    if (dispatch->options & DDTRACE_DISPATCH_INNERHOOK) {
-        return _dd_legacy_fcall_helper(execute_data, dispatch);
-    }
-    _dd_fcall_helper(EX(call), dispatch);
-    return _prev_fcall_handler ? _prev_fcall_handler(execute_data) : ZEND_USER_OPCODE_DISPATCH;
 }
 
 static int _dd_do_fcall_handler(zend_execute_data *execute_data) {
@@ -702,24 +835,8 @@ static int _dd_do_fcall_handler(zend_execute_data *execute_data) {
         !_dd_should_trace_call(EX(call), EX(call)->func, &dispatch)) {
         return _prev_fcall_handler ? _prev_fcall_handler(execute_data) : ZEND_USER_OPCODE_DISPATCH;
     }
-    if (dispatch->options & DDTRACE_DISPATCH_INNERHOOK) {
-        return _dd_legacy_fcall_helper(execute_data, dispatch);
-    }
     _dd_fcall_helper(EX(call), dispatch);
     return _prev_fcall_handler ? _prev_fcall_handler(execute_data) : ZEND_USER_OPCODE_DISPATCH;
-}
-
-static int _dd_do_fcall_by_name_legacy_handler(zend_execute_data *execute_data) {
-    ddtrace_dispatch_t *dispatch = NULL;
-    if (ZEND_DO_FCALL_BY_NAME != EX(opline)->opcode || !EX(call)->func ||
-        !_dd_should_trace_call(EX(call), EX(call)->func, &dispatch)) {
-        return _prev_fcall_by_name_handler ? _prev_fcall_by_name_handler(execute_data) : ZEND_USER_OPCODE_DISPATCH;
-    }
-    if (dispatch->options & DDTRACE_DISPATCH_INNERHOOK) {
-        return _dd_legacy_fcall_helper(execute_data, dispatch);
-    }
-    _dd_fcall_helper(EX(call), dispatch);
-    return _prev_fcall_by_name_handler ? _prev_fcall_by_name_handler(execute_data) : ZEND_USER_OPCODE_DISPATCH;
 }
 
 static int _dd_do_fcall_by_name_handler(zend_execute_data *execute_data) {
@@ -727,9 +844,6 @@ static int _dd_do_fcall_by_name_handler(zend_execute_data *execute_data) {
     if (ZEND_DO_FCALL_BY_NAME != EX(opline)->opcode || !EX(call)->func ||
         EX(call)->func->type == ZEND_INTERNAL_FUNCTION || !_dd_should_trace_call(EX(call), EX(call)->func, &dispatch)) {
         return _prev_fcall_by_name_handler ? _prev_fcall_by_name_handler(execute_data) : ZEND_USER_OPCODE_DISPATCH;
-    }
-    if (dispatch->options & DDTRACE_DISPATCH_INNERHOOK) {
-        return _dd_legacy_fcall_helper(execute_data, dispatch);
     }
     _dd_fcall_helper(EX(call), dispatch);
     return _prev_fcall_by_name_handler ? _prev_fcall_by_name_handler(execute_data) : ZEND_USER_OPCODE_DISPATCH;
@@ -962,15 +1076,8 @@ void ddtrace_opcode_minit(void) {
     _prev_fcall_handler = zend_get_user_opcode_handler(ZEND_DO_FCALL);
     _prev_fcall_by_name_handler = zend_get_user_opcode_handler(ZEND_DO_FCALL_BY_NAME);
 
-    if (!get_dd_trace_sandbox_enabled()) {
-        _prev_icall_handler = zend_get_user_opcode_handler(ZEND_DO_ICALL);
-        zend_set_user_opcode_handler(ZEND_DO_ICALL, _dd_do_icall_handler);
-        zend_set_user_opcode_handler(ZEND_DO_FCALL, _dd_do_fcall_legacy_handler);
-        zend_set_user_opcode_handler(ZEND_DO_FCALL_BY_NAME, _dd_do_fcall_by_name_legacy_handler);
-    } else {
-        zend_set_user_opcode_handler(ZEND_DO_FCALL, _dd_do_fcall_handler);
-        zend_set_user_opcode_handler(ZEND_DO_FCALL_BY_NAME, _dd_do_fcall_by_name_handler);
-    }
+    zend_set_user_opcode_handler(ZEND_DO_FCALL, _dd_do_fcall_handler);
+    zend_set_user_opcode_handler(ZEND_DO_FCALL_BY_NAME, _dd_do_fcall_by_name_handler);
     zend_set_user_opcode_handler(ZEND_DO_UCALL, _dd_do_ucall_handler);
 
     _prev_return_handler = zend_get_user_opcode_handler(ZEND_RETURN);
@@ -990,9 +1097,6 @@ void ddtrace_opcode_minit(void) {
 }
 
 void ddtrace_opcode_mshutdown(void) {
-    if (!get_dd_trace_sandbox_enabled()) {
-        zend_set_user_opcode_handler(ZEND_DO_ICALL, NULL);
-    }
     zend_set_user_opcode_handler(ZEND_DO_UCALL, NULL);
     zend_set_user_opcode_handler(ZEND_DO_FCALL, NULL);
     zend_set_user_opcode_handler(ZEND_DO_FCALL_BY_NAME, NULL);
@@ -1007,47 +1111,8 @@ void ddtrace_opcode_mshutdown(void) {
     zend_set_user_opcode_handler(ZEND_EXIT, NULL);
 }
 
-void ddtrace_execute_internal_minit(void) {
-    if (!get_dd_trace_sandbox_enabled()) {
-        _prev_execute_internal = !zend_execute_internal ? execute_internal : zend_execute_internal;
-        zend_execute_internal = _dd_execute_internal;
-    }
-}
-
-void ddtrace_execute_internal_mshutdown(void) {
-    if (!get_dd_trace_sandbox_enabled()) {
-        zend_execute_internal = _prev_execute_internal != execute_internal ? _prev_execute_internal : NULL;
-    }
-}
-
-static void _dd_execute_internal(zend_execute_data *execute_data, zval *return_value) {
-    zend_function *current_fbc = EX(func);
-    if (!current_fbc) {
-        _prev_execute_internal(execute_data, return_value);
-        return;
-    }
-    ddtrace_dispatch_t *dispatch = NULL;
-    if (!_dd_should_trace_call(execute_data, current_fbc, &dispatch)) {
-        _prev_execute_internal(execute_data, return_value);
-        return;
-    }
-
-    // Legacy API not supported from zend_execute_internal override
-    if (dispatch->options & DDTRACE_DISPATCH_INNERHOOK) {
-        _prev_execute_internal(execute_data, return_value);
-        return;
-    }
-
-    ddtrace_span_fci *span_fci = ddtrace_prehook(execute_data, dispatch, NULL);
-
-    _prev_execute_internal(execute_data, return_value);
-    if (span_fci) {
-        return;
-    }
-
-    ddtrace_posthook(current_fbc, span_fci, return_value);
-    dispatch->busy = 0;
-}
+void ddtrace_execute_internal_minit(void) {}
+void ddtrace_execute_internal_mshutdown(void) {}
 
 PHP_FUNCTION(ddtrace_internal_function_handler) {
     ddtrace_dispatch_t *dispatch;
@@ -1058,7 +1123,7 @@ PHP_FUNCTION(ddtrace_internal_function_handler) {
         return;
     }
 
-    ddtrace_span_fci *span_fci = ddtrace_prehook(execute_data, dispatch, NULL);
+    ddtrace_span_fci *span_fci = ddtrace_prehook(execute_data, dispatch);
     handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
     if (span_fci) {
         ddtrace_posthook(EX(func), span_fci, return_value);

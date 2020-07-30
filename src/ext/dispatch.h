@@ -9,11 +9,18 @@
 #include "compatibility.h"
 #include "ddtrace_string.h"
 
-#define DDTRACE_DISPATCH_INNERHOOK (1u << 0u)
-#define DDTRACE_DISPATCH_INSTRUMENT_WHEN_LIMITED (1u << 1u)
-#define DDTRACE_DISPATCH_POSTHOOK (1u << 2u)
-#define DDTRACE_DISPATCH_PREHOOK (1u << 3u)
-#define DDTRACE_DISPATCH_DEFERRED_LOADER (1u << 4u)
+/* We use the two lowest bits as an index into an array to cut down on
+ * conditional logic.
+ * First bit: pre or post hook
+ * Second bit: tracing or non tracing
+ * Since a tracing posthook is most common, it should be 00.
+ */
+#define DDTRACE_DISPATCH_POSTHOOK 0u
+#define DDTRACE_DISPATCH_PREHOOK (1u)
+#define DDTRACE_DISPATCH_NON_TRACING (1u << 1u)
+#define DDTRACE_DISPATCH_INNERHOOK (1u << 2u)
+#define DDTRACE_DISPATCH_DEFERRED_LOADER (1u << 3u)
+#define DDTRACE_DISPATCH_INSTRUMENT_WHEN_LIMITED (1u << 4u)
 
 typedef struct ddtrace_dispatch_t {
     uint16_t options;
