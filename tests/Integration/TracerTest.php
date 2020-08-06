@@ -14,6 +14,9 @@ final class TracerTest extends BaseTestCase
 {
     use TracerTestTrait;
 
+    // doesn't actually test sandbox, but doesn't use legacy either
+    const IS_SANDBOX = true;
+
     protected function setUp()
     {
         parent::setUp();

@@ -490,8 +490,8 @@ release_args:
     zval_ptr_dtor(&args);
 
 release_dispatch:
-    ddtrace_dispatch_release(dispatch);
     dispatch->busy = 0;
+    ddtrace_dispatch_release(dispatch);
     ddtrace_sandbox_end(&backup TSRMLS_CC);
 }
 

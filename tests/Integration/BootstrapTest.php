@@ -9,6 +9,9 @@ use PHPUnit\Framework\TestCase;
 
 final class BootstrapTest extends WebFrameworkTestCase
 {
+    // doesn't actually test sandbox, but doesn't use legacy either
+    const IS_SANDBOX = true;
+
     protected static function getAppIndexScript()
     {
         return __DIR__ . '/BootstrapTest_files/index.php';

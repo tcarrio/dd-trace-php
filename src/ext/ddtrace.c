@@ -110,7 +110,6 @@ static zend_extension _dd_zend_extension_entry = {"ddtrace",
 
                                                   STANDARD_ZEND_EXTENSION_PROPERTIES};
 
-#if PHP_VERSION_ID >= 50600
 ZEND_BEGIN_ARG_INFO_EX(arginfo_ddtrace_trace_method, 0, 0, 3)
 ZEND_ARG_INFO(0, class_name)
 ZEND_ARG_INFO(0, method_name)
@@ -134,7 +133,6 @@ ZEND_BEGIN_ARG_INFO_EX(arginfo_ddtrace_trace_function, 0, 0, 2)
 ZEND_ARG_INFO(0, function_name)
 ZEND_ARG_INFO(0, tracing_closure)
 ZEND_END_ARG_INFO()
-#endif
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_dd_trace_serialize_closed_spans, 0, 0, 0)
 ZEND_END_ARG_INFO()
@@ -654,7 +652,6 @@ static PHP_FUNCTION(dd_trace) {
     zval *class_name = NULL;
     zval *callable = NULL;
     zval *config_array = NULL;
-    uint32_t options = 0;
 
     if (DDTRACE_G(disable) || DDTRACE_G(disable_in_current_request)) {
         RETURN_BOOL(0);
@@ -676,12 +673,6 @@ static PHP_FUNCTION(dd_trace) {
     }
 
     if (ddtrace_should_warn_legacy()) {
-#if PHP_VERSION_ID < 50500
-        char *message =
-            "dd_trace DEPRECATION NOTICE: the function `dd_trace` is deprecated and will become a no-op in the next "
-            "release, and eventually will be removed. Set DD_TRACE_WARN_LEGACY_DD_TRACE=0 to suppress this warning.";
-        ddtrace_log_err(message);
-#else
         char *message =
             "dd_trace DEPRECATION NOTICE: the function `dd_trace` (target: %s%s%s) is deprecated and will become a "
             "no-op in the next release, and eventually will be removed. Please follow "
@@ -689,49 +680,10 @@ static PHP_FUNCTION(dd_trace) {
             "DD_TRACE_WARN_LEGACY_DD_TRACE=0 to suppress this warning.";
         ddtrace_log_errf(message, class_name ? Z_STRVAL_P(class_name) : "", class_name ? "::" : "",
                          Z_STRVAL_P(function));
-#endif
     }
 
-    if (ddtrace_blacklisted_disable_legacy && !get_dd_trace_ignore_legacy_blacklist()) {
-        ddtrace_log_debugf(
-            "Cannot instrument '%s()' with dd_trace(). This functionality is disabled due to a potentially conflicting "
-            "module. To re-enable dd_trace(), please set the environment variable: DD_TRACE_IGNORE_LEGACY_BLACKLIST=1",
-            Z_STRVAL_P(function));
-        RETURN_BOOL(0);
-    }
-
-    if (!function || Z_TYPE_P(function) != IS_STRING) {
-        if (class_name) {
-            ddtrace_zval_ptr_dtor(class_name);
-        }
-        ddtrace_zval_ptr_dtor(function);
-
-        ddtrace_log_debug("function/method name parameter must be a string");
-
-        RETURN_BOOL(0);
-    }
-
-    if (config_array) {
-        if (_parse_config_array(config_array, &callable, &options TSRMLS_CC) == FALSE) {
-            RETURN_BOOL(0);
-        }
-        if ((options & 0xFu) == DDTRACE_DISPATCH_POSTHOOK) {
-            ddtrace_log_debug("Legacy API does not support 'posthook'");
-            RETURN_BOOL(0);
-        }
-        if (options & DDTRACE_DISPATCH_PREHOOK) {
-            ddtrace_log_debug("Legacy API does not support 'prehook'");
-            RETURN_BOOL(0);
-        }
-    } else {
-        options |= DDTRACE_DISPATCH_INNERHOOK;
-    }
-
-    zend_bool rv = ddtrace_trace(class_name, function, callable, options TSRMLS_CC);
-    RETURN_BOOL(rv);
 }
 
-#if PHP_VERSION_ID >= 50600
 static PHP_FUNCTION(trace_method) {
     PHP5_UNUSED(return_value_used, this_ptr, return_value_ptr);
     zval *class_name = NULL;
@@ -1000,7 +952,6 @@ static PHP_FUNCTION(trace_function) {
     zend_bool rv = ddtrace_trace(NULL, function, tracing_closure, options TSRMLS_CC);
     RETURN_BOOL(rv);
 }
-#endif
 
 static PHP_FUNCTION(dd_trace_serialize_closed_spans) {
     PHP5_UNUSED(return_value_used, this_ptr, return_value_ptr, ht);
@@ -1012,15 +963,8 @@ static PHP_FUNCTION(dd_trace_serialize_closed_spans) {
 static PHP_FUNCTION(dd_trace_forward_call) {
     PHP5_UNUSED(return_value_used, this_ptr, return_value_ptr, ht);
 
-    if (DDTRACE_G(disable)) {
-        RETURN_BOOL(0);
-    }
-
-#if PHP_VERSION_ID >= 70000
-    ddtrace_wrapper_forward_call_from_userland(execute_data, return_value TSRMLS_CC);
-#else
-    ddtrace_wrapper_forward_call_from_userland(EG(current_execute_data), return_value TSRMLS_CC);
-#endif
+    // deprecated, will be removed in the future
+    RETURN_BOOL(0)
 }
 
 static PHP_FUNCTION(dd_trace_env_config) {
@@ -1572,14 +1516,12 @@ static const zend_function_entry ddtrace_functions[] = {
     DDTRACE_FE(ddtrace_config_integration_enabled, arginfo_ddtrace_config_integration_enabled),
     DDTRACE_FE(ddtrace_config_trace_enabled, arginfo_ddtrace_config_trace_enabled),
     DDTRACE_FE(ddtrace_init, arginfo_ddtrace_init),
-#if PHP_VERSION_ID >= 50600
     DDTRACE_NS_FE(trace_function, arginfo_ddtrace_trace_function),
     DDTRACE_FALIAS(dd_trace_function, trace_function, arginfo_ddtrace_trace_function),
     DDTRACE_NS_FE(trace_method, arginfo_ddtrace_trace_method),
     DDTRACE_FALIAS(dd_trace_method, trace_method, arginfo_ddtrace_trace_method),
     DDTRACE_NS_FE(hook_function, arginfo_ddtrace_hook_function),
     DDTRACE_NS_FE(hook_method, arginfo_ddtrace_hook_method),
-#endif
     DDTRACE_NS_FE(startup_logs, arginfo_ddtrace_void),
     DDTRACE_SUB_NS_FE("Config\\", integration_analytics_enabled, arginfo_ddtrace_config_integration_analytics_enabled),
     DDTRACE_SUB_NS_FE("Config\\", integration_analytics_sample_rate,

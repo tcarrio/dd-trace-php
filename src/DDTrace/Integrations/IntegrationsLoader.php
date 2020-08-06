@@ -2,7 +2,6 @@
 
 namespace DDTrace\Integrations;
 
-use DDTrace\Integrations\CakePHP\CakePHPIntegration;
 use DDTrace\Integrations\CakePHP\CakePHPSandboxedIntegration;
 use DDTrace\Integrations\CodeIgniter\V2\CodeIgniterSandboxedIntegration;
 use DDTrace\Integrations\Curl\CurlIntegration;
@@ -59,7 +58,6 @@ class IntegrationsLoader
      * @var array
      */
     public static $officiallySupportedIntegrations = [
-        CakePHPIntegration::NAME => '\DDTrace\Integrations\CakePHP\CakePHPIntegration',
         CurlIntegration::NAME => '\DDTrace\Integrations\Curl\CurlIntegration',
         EloquentIntegration::NAME => '\DDTrace\Integrations\Eloquent\EloquentIntegration',
         GuzzleIntegration::NAME => '\DDTrace\Integrations\Guzzle\GuzzleIntegration',
@@ -178,7 +176,7 @@ class IntegrationsLoader
                 continue;
             }
 
-            if (strpos($class, 'SandboxedIntegration') !== false) {
+            if (\strpos($class, 'SandboxedIntegration') !== false) {
                 $integration = new $class();
                 $this->loadings[$name] = $integration->init();
             } else {

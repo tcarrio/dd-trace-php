@@ -5,8 +5,8 @@ DDTrace\hook_method prehook is passed the correct args (variadic)
 use DDTrace\SpanData;
 
 var_dump(DDTrace\hook_method('Greeter', 'greet',
-    function (...$args) {
-        var_dump($args);
+    function () {
+        var_dump(func_get_args());
     }
 ));
 

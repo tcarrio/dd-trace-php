@@ -6,8 +6,8 @@ use DDTrace\SpanData;
 
 var_dump(DDTrace\hook_method('Greeter', 'greet',
     null,
-    function (...$args) {
-        var_dump($args);
+    function () {
+        var_dump(func_get_args());
     }
 ));
 
