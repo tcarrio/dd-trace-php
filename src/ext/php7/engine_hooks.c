@@ -5,7 +5,6 @@
 #include <Zend/zend_exceptions.h>
 #include <Zend/zend_generators.h>
 #include <Zend/zend_interfaces.h>
-#include <src/ext/ddtrace.h>
 #include <stdbool.h>
 
 #include <ext/spl/spl_exceptions.h>
