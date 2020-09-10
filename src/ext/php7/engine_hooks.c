@@ -171,9 +171,8 @@ static bool dd_should_trace_helper(zend_execute_data *call, zend_function *fbc, 
             }
 
             zval retval, *integration = &dispatch->deferred_load_integration_name;
-            zend_function **fn_proxy = &dd_integrations_load_deferred_integration;
             ddtrace_string loader = DDTRACE_STRING_LITERAL("ddtrace\\integrations\\load_deferred_integration");
-            ZEND_RESULT_CODE status = ddtrace_call_function(fn_proxy, loader.ptr, loader.len, &retval, 1, integration);
+            ZEND_RESULT_CODE status = ddtrace_call_function(NULL, loader.ptr, loader.len, &retval, 1, integration);
 
             ddtrace_dispatch_release(dispatch);
             dispatch = EXPECTED(status == SUCCESS) ? ddtrace_find_dispatch(scope, &fname) : NULL;
