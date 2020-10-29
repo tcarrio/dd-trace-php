@@ -65,7 +65,9 @@ aliases:
   - &STEP_COMPOSER_SELF_UPDATE
     run:
       name: Updating composer itself
-      command: sudo composer self-update
+      command: |
+          sudo composer self-update # If it's too old it won't have option --2
+          sudo composer self-update --2
 
   - &STEP_COMPOSER_CACHE_RESTORE
     restore_cache:
