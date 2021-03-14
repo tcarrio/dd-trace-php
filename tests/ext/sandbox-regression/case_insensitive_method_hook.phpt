@@ -1,5 +1,7 @@
 --TEST--
 [Sandbox regression] Trace case-insensitive method from a child class
+--SKIPIF--
+<?php if (\PHP_VERSION_ID >= 80000) die("skip PHP 8 tracer is case sensitive"); ?>
 --FILE--
 <?php
 class Ancestor {

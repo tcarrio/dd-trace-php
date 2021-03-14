@@ -80,7 +80,7 @@ void ddtrace_integrations_mshutdown(void) { zend_hash_destroy(&_dd_string_to_int
  */
 static void dd_register_known_calls(TSRMLS_D) {
     DDTRACE_KNOWN_INTEGRATION("wpdb", "query");
-    DDTRACE_KNOWN_INTEGRATION("illuminate\\events\\dispatcher", "fire");
+    DDTRACE_KNOWN_INTEGRATION("Illuminate\\Events\\Dispatcher", "fire");
 }
 
 static void dd_load_test_integrations(TSRMLS_D) {
@@ -89,8 +89,8 @@ static void dd_load_test_integrations(TSRMLS_D) {
         return;
     }
 
-    DDTRACE_DEFERRED_INTEGRATION_LOADER("test", "public_static_method", "ddtrace\\test\\testsandboxedintegration");
-    DDTRACE_INTEGRATION_TRACE("test", "automaticaly_traced_method", "tracing_function", DDTRACE_DISPATCH_POSTHOOK);
+    DDTRACE_DEFERRED_INTEGRATION_LOADER("Test", "public_static_method", "ddtrace\\test\\testsandboxedintegration");
+    DDTRACE_INTEGRATION_TRACE("Test", "automaticaly_traced_method", "tracing_function", DDTRACE_DISPATCH_POSTHOOK);
 }
 
 static void dd_set_up_deferred_loading_by_method(ddtrace_integration_name name, ddtrace_string Class,
