@@ -16,6 +16,11 @@
 
 #include "http.h"
 
+// We want to prevent the OS from sending us completely unnecessary signals.
+#ifdef __APPLE__
+#define MSG_NOSIGNAL 0
+#endif
+
 int SockSetBit(int fd, int bit, bool v) {
   return setsockopt(fd, IPPROTO_TCP, bit, (const void *)&(int){v}, sizeof(int));
 }
@@ -41,6 +46,11 @@ int TcpSockNew() {
   if (-1 == SockSetBit(fd, TCP_QUICKACK, 1))
     return close(fd), -1;
 #endif
+#if __APPLE__
+  if (-1 ==
+      setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, (void *)&(int){1}, sizeof(int)))
+    return close(fd), -1;
+#endif
   return fd;
 }
 
@@ -60,9 +70,17 @@ bool SocketSetNonblocking(int fd, bool is_nonblocking) {
 /********************************  HTTP Stuff  ********************************/
 int HttpConnect(HttpConn *conn, const char *host, const char *port) {
   // The underlying machinery is a bit permissive, so these NULL pointers may
-  // not bubble up during debuggin
+  // not bubble up during debugging
   assert(host);
   assert(port);
+
+  // If the connection state is new, then initialize it
+  // TODO, if the HttpReq object ever gets an initializer, then let's just
+  //       set this there.
+  if (conn->state == HCS_FRESH) {
+    conn->fd = -1;
+    conn->state = HCS_INIT;
+  }
 
   // If we are trying to connect but we're already connected, don't connect.
   if (conn->state == HCS_CONNECTED || conn->state == HCS_SENDREC)
@@ -78,8 +96,9 @@ int HttpConnect(HttpConn *conn, const char *host, const char *port) {
   }
 
   // Cleanup potential old sockets
-  if (-1 != conn->fd)
+  if (-1 != conn->fd) {
     close(conn->fd), conn->fd = -1;
+  }
 
   // We have a valid Addr, now connect
   if (-1 == (conn->fd = TcpSockNew()))
@@ -99,10 +118,23 @@ int HttpSend(HttpReq *req, const void *payload, size_t sz_payload) {
                            (const char *)req->port)))
       return ret;
 
-  while (-1 == (ret = send(req->conn->fd, payload, sz_payload, MSG_DONTWAIT)))
+  while (-1 ==
+         (ret = send(req->conn->fd, payload, sz_payload,
+                     MSG_DONTWAIT | MSG_NOSIGNAL)))
     if (errno == EAGAIN) {
       req->conn->state = HCS_SENDREC;
       return HTTP_ESUCCESS;
+    } else if (errno == EPIPE) {
+      // Although the spec dictates what servers *should* do when keeping the
+      // connection is opened is specified, we need to handle SIGPIPE anyway, so
+      // rather than relying on the header, let's rely on the dynamic behavior
+      // of the server
+      req->conn->state = HCS_INIT;
+      close(req->conn->fd);
+      req->conn->fd = -1;
+      if ((ret = HttpConnect(req->conn, (const char *)req->host,
+                             (const char *)req->port)))
+        return ret;
     } else if (errno != EINTR) {
       return ret;
     }
@@ -194,13 +226,18 @@ ssize_t HttpResRecv(HttpRes *res) {
   // If this recv() was interrupted by a signal, do it over again
   while (true) {
     if (-1 ==
-        (n = recv(res->conn->fd, &A->str[A->n], A->sz - A->n, MSG_DONTWAIT))) {
+        (n = recv(res->conn->fd, &A->str[A->n], A->sz - A->n,
+                  MSG_DONTWAIT | MSG_NOSIGNAL))) {
       if (errno == EWOULDBLOCK) {
         // -1 return with ewouldblock means there's no data to read
         return 0;
       } else if (errno == EINTR) {
         continue;
       } else {
+        // Whatever happened is bad news for us; shut the connection down
+        close(res->conn->fd);
+        res->conn->fd = -1;
+        res->conn->state = HCS_INIT;
         return -1;
       }
     }
