@@ -23,6 +23,7 @@
 #include "engine_hooks.h"
 #include "logging.h"
 #include "mpack/mpack.h"
+#include "runtime.h"
 #include "span.h"
 #include "uri_normalization.h"
 
@@ -446,10 +447,37 @@ static zend_string *dd_build_req_url() {
     return zend_strpprintf(0, "http%s://%s%.*s", is_https ? "s" : "", Z_STRVAL_P(host_zv), uri_len, uri);
 }
 
+static bool is_nil_uuid(datadog_php_uuid uuid) {
+    for (unsigned i = 0; i != 16; ++i) {
+        if (uuid.data[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void ddtrace_set_root_span_properties(ddtrace_span_t *span) {
     zval *meta = ddtrace_spandata_property_meta(span);
 
     add_assoc_long(meta, "system.pid", (long)getpid());
+
+    // The runtime-id is used by the profiler to associate traces and profiles.
+    datadog_php_uuid runtime_id = datadog_php_runtime_id();
+    if (!is_nil_uuid(runtime_id)) {
+        zend_string *encoded_id = zend_string_alloc(36, false);
+
+        /* Compilers rightfully complains about array bounds due to the struct
+         * hack if we write straight to the char storage. Saving the char* to a
+         * temporary avoids it.
+         */
+        char *tmp = ZSTR_VAL(encoded_id);
+        datadog_php_uuid_encode36(runtime_id, tmp);
+        ZSTR_VAL(encoded_id)[36] = '\0';
+
+        add_assoc_str(meta, "runtime-id", encoded_id);
+
+        // TODO: support forking
+    }
 
     const char *method = SG(request_info).request_method;
     if (get_DD_TRACE_URL_AS_RESOURCE_NAMES_ENABLED() && method) {

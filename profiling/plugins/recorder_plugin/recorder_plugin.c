@@ -8,6 +8,7 @@
 #include <components/channel/channel.h>
 #include <components/string_view/string_view.h>
 #include <components/time/time.h>
+#include <components/uuid/uuid.h>
 #include <ddprof/ffi.h>
 #include <php.h>
 #include <stdatomic.h>
@@ -35,6 +36,8 @@ ddprof_ffi_ByteSlice string_to_byteslice(struct string_s str) {
 }
 
 struct {
+  alignas(32) char runtime_id[37]; // UUID using encode36
+
   /**
    * We need to make copies of the environment variables because they can be
    * invalidated by the environment. We store all of these strings in the arena.
@@ -514,6 +517,8 @@ static string datadog_php_profiler_getenv_or(datadog_php_string_view name,
   return env_var;
 }
 
+datadog_php_uuid datadog_php_runtime_id(void);
+
 static bool recorder_first_activate_helper() {
   globals.arena =
       datadog_php_arena_new(sizeof globals.strings, globals.strings);
@@ -595,6 +600,11 @@ static bool recorder_first_activate_helper() {
   ddprof_ffi_ByteSlice base_url = string_to_byteslice(globals.agent_url);
   ddprof_ffi_EndpointV3 endpoint = ddprof_ffi_EndpointV3_agent(base_url);
 
+  datadog_php_uuid runtime_id = datadog_php_runtime_id();
+
+  datadog_php_uuid_encode36(runtime_id, globals.runtime_id);
+  globals.runtime_id[36] = '\0';
+
   ddprof_ffi_Tag tags_[] = {
       {.name = to_byteslice("language"), .value = to_byteslice("php")},
       {.name = to_byteslice("service"),
@@ -604,6 +614,8 @@ static bool recorder_first_activate_helper() {
        .value = string_to_byteslice(globals.version)},
       {.name = to_byteslice("profiler_version"),
        .value = to_byteslice(PHP_DATADOG_PROFILING_VERSION)},
+      {.name = to_byteslice("runtime-id"),
+       .value = {.ptr = (const uint8_t *)globals.runtime_id, .len = 36}},
   };
 
   ddprof_ffi_Slice_tag tags = {.ptr = tags_,

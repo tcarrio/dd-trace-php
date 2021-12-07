@@ -43,6 +43,7 @@
 #include "memory_limit.h"
 #include "random.h"
 #include "request_hooks.h"
+#include "runtime.h"
 #include "serializer.h"
 #include "signals.h"
 #include "span.h"
@@ -102,7 +103,10 @@ static void ddtrace_shutdown(struct _zend_extension *extension) {
 #endif
 }
 
+static pthread_once_t dd_activate_once_control = PTHREAD_ONCE_INIT;
+
 static void ddtrace_activate(void) {
+    pthread_once(&dd_activate_once_control, datadog_php_runtime_first_activate);
 #ifdef PHP_DATADOG_PROFILING_H
     datadog_profiling_activate();
 #endif
