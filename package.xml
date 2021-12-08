@@ -92,6 +92,7 @@
     </dependencies>
     <providesextension>ddtrace</providesextension>
     <extsrcrelease>
+        <configureoption default="no" name="enable-datadog-profiling" prompt="Enable Datadog Continuous Profiling" />
         <filelist>
             <install as="datadog_trace/bridge/_generated_api.php" name="bridge/_generated_api.php" />
             <install as="datadog_trace/bridge/_generated_internal.php" name="bridge/_generated_internal.php" />

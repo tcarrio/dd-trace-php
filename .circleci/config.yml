@@ -990,6 +990,9 @@ jobs:
       showdiff:
         type: boolean
         default: true
+      profiling:
+        type: boolean
+        default: false
     working_directory: ~/datadog
     executor:
       name: with_httpbin_and_request_replayer
@@ -1000,7 +1003,7 @@ jobs:
           name: Install from PECL build
           command: |
             cp ./pecl/datadog_trace-*.tgz ./datadog_trace.tgz
-            sudo pecl install datadog_trace.tgz
+            echo <<# parameters.profiling >>"yes"<</ parameters.profiling >><<^ parameters.profiling>>"no"<</ parameters.profiling>> | sudo pecl install datadog_trace.tgz
             echo "extension=ddtrace.so" | sudo tee $(php -i | awk -F"=> " '/Scan this dir for additional .ini files/ {print $2}')/ddtrace.ini
             php --ri=ddtrace
       - <<: *STEP_WAIT_REQUEST_REPLAYER
