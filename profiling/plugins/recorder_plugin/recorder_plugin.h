@@ -7,6 +7,11 @@
 #include <ddtrace_attributes.h>
 #include <stack-collector/stack-collector.h>
 
+/* The recorder has two high level responsibilities:
+ *  1. Aggregate samples.
+ *  2. Export profiles once the configured period has elapsed.
+ */
+
 typedef struct datadog_php_record_values {
   uint64_t count;    // usually 0 or 1
   int64_t wall_time; // wall time in ns since last sample, may be 0

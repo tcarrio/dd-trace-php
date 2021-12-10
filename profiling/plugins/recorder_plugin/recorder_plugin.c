@@ -113,6 +113,10 @@ datadog_php_recorder_plugin_record(datadog_php_record_values record_values,
     return false;
   }
 
+  /* todo: will it be better if we hoist the record_msg allocation to the caller
+   *       and make this function only a thin, type-safe wrapper around the
+   *       channel?
+   */
   record_msg *message = malloc(sizeof(record_msg));
   if (message) {
     message->record_values = record_values;
@@ -354,6 +358,12 @@ static struct ddprof_ffi_Profile *profile_new(void) {
       },
   };
 
+  /* Note that the maximum memory used by the profile can be estimated with
+   * decent accuracy by using the period, sample frequency, maximum payload size
+   * of each sample, and the channel's capacity.
+   * HOWEVER, this may not hold true for future profiles, such as garbage
+   * collection profiling, so be cautious about that when adding them.
+   */
   struct ddprof_ffi_Slice_value_type sample_types = {
       .ptr = value_types,
       .len = cpu_time_enabled ? 3 : 2,
@@ -393,7 +403,7 @@ void datadog_php_recorder_plugin_main(void) {
   }
 
   while (enabled) {
-    uint64_t sleep_for_nanos = period.value;
+    uint64_t sleep_for_nanos = period_val;
     instant before = instant_now();
     do {
       record_msg *message;

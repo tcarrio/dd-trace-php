@@ -90,7 +90,7 @@ typedef uint64_t uv_hrtime_t;
  * a composite struct to hold everything we need.
  */
 typedef struct stack_collector_thread_globals {
-  _Atomic uint64_t interrupt_count;
+  _Atomic uint32_t interrupt_count;
   zend_executor_globals *eg;
   bool have_uv_loop;
   uv_loop_t uv_loop;
@@ -146,7 +146,7 @@ static void datadog_php_stack_collector_collect_cb(uv_timer_t *handle) {
    * count, or sometimes it will run and be 0. Both situations should be
    * tolerable.
    */
-  uint64_t prev_val = atomic_fetch_add(&remote_globals->interrupt_count, 1);
+  uint32_t prev_val = atomic_fetch_add(&remote_globals->interrupt_count, 1);
   if (prev_val == 0) {
     remote_globals->eg->vm_interrupt = 1;
   }
