@@ -5,8 +5,8 @@
 
 typedef datadog_php_string_view string_view_t;
 
-void datadog_php_stack_collect(zend_execute_data *execute_data,
-                               datadog_php_stack_sample *sample) {
+DDTRACE_HOT void datadog_php_stack_collect(zend_execute_data *execute_data,
+                                           datadog_php_stack_sample *sample) {
   datadog_php_stack_sample_ctor(sample);
 
   for (uint16_t depth = 0;

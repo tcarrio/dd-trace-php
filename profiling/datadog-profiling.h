@@ -4,7 +4,7 @@
 #include <Zend/zend_extensions.h>
 #include <Zend/zend_modules.h>
 #include <components/string_view/string_view.h>
-#include <ddtrace_attribtues.h>
+#include <ddtrace_attributes.h>
 #include <stdbool.h>
 
 /**
