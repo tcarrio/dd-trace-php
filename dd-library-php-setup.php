@@ -75,6 +75,7 @@ function install($options)
     $tmpDirTarGz = $tmpDir . "/dd-library-php-x86_64-$platform.tar.gz";
     $tmpArchiveRoot = $tmpDir . '/dd-library-php';
     $tmpArchiveTracerRoot = $tmpDir . '/dd-library-php/tracer';
+    $tmpArchiveProfilerRoot = $tmpDir . '/dd-library-php/profiler';
     $tmpBridgeDir = $tmpArchiveTracerRoot . '/bridge';
     execute_or_exit("Cannot create directory '$tmpDir'", "mkdir -p " . escapeshellarg($tmpDir));
     execute_or_exit(
@@ -136,9 +137,14 @@ function install($options)
         }
 
         // Tracer
-        $extensionRealPath = "$tmpArchiveTracerRoot/ext/$extensionVersion/ddtrace$extensionSuffix.so" ;
-        $extensionDestination = $phpProperties[EXTENSION_DIR] . '/ddtrace.so';
-        safe_copy_extension($extensionRealPath, $extensionDestination);
+        $tracerExtensionRealPath = "$tmpArchiveTracerRoot/ext/$extensionVersion/ddtrace$extensionSuffix.so";
+        $tracerExtensionDestination = $phpProperties[EXTENSION_DIR] . '/ddtrace.so';
+        safe_copy_extension($tracerExtensionRealPath, $tracerExtensionDestination);
+
+        // Profiler
+        $profilerExtensionRealPath = "$tmpArchiveProfilerRoot/ext/$extensionVersion/datadog-profiling.so";
+        $profilerExtensionDestination = $phpProperties[EXTENSION_DIR] . '/ddprofiling.so';
+        safe_copy_extension($profilerExtensionRealPath, $profilerExtensionDestination);
 
         // Writing the ini file
         $iniFileName = '98-ddtrace.ini';
