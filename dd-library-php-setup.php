@@ -16,6 +16,7 @@ const OPT_FILE = 'file';
 const OPT_URL = 'url';
 const OPT_VERSION = 'version';
 const OPT_UNINSTALL = 'uninstall';
+const OPT_ENABLE_PROFILING = 'enable-profiling';
 
 function main()
 {
@@ -46,11 +47,12 @@ Options:
     -h, --help                  Print this help text and exit
     --php-bin all|<path to php> Install the library to the specified binary or all php binaries in standard search
                                 paths. The option can be provided multiple times.
-    --version <0.1.2>    Install a specific version. If set --url and --file are ignored.
-    --url <url>          Install the tracing library from a url. If set --file is ignored.
-    --file <file>        Install the tracing library from a local .tar.gz file.
+    --version <0.1.2>           Install a specific version. If set --url and --file are ignored.
+    --url <url>                 Install the tracing library from a url. If set --file is ignored.
+    --file <file>               Install the tracing library from a local .tar.gz file.
     --install-dir <path>        Install to a specific directory. Default: '/opt/datadog'
     --uninstall                 Uninstall the library from the specified binaries
+    --enable-profiling          Enable the BETA profiling module.
 
 EOD;
     exit(0);
@@ -121,6 +123,8 @@ function install($options)
         $binaryForLog = ($command === $fullPath) ? $fullPath : "$command ($fullPath)";
         echo "Installing to binary: $binaryForLog\n";
 
+        $phpMajorMinor = get_php_major_minor($fullPath);
+
         check_php_ext_prerequisite_or_exit($fullPath, 'json');
 
         $phpProperties = ini_values($fullPath);
@@ -142,9 +146,13 @@ function install($options)
         safe_copy_extension($tracerExtensionRealPath, $tracerExtensionDestination);
 
         // Profiler
-        $profilerExtensionRealPath = "$tmpArchiveProfilerRoot/ext/$extensionVersion/datadog-profiling.so";
-        $profilerExtensionDestination = $phpProperties[EXTENSION_DIR] . '/ddprofiling.so';
-        safe_copy_extension($profilerExtensionRealPath, $profilerExtensionDestination);
+        $shouldInstallProfiler = in_array($phpMajorMinor, ['7.1', '7.2', '7.3', '7.4', '8.0']);
+        $shouldEnableProfiler = false;
+        if ($shouldInstallProfiler) {
+            $profilerExtensionRealPath = "$tmpArchiveProfilerRoot/ext/$extensionVersion/datadog-profiling.so";
+            $profilerExtensionDestination = $phpProperties[EXTENSION_DIR] . '/ddprofiling.so';
+            safe_copy_extension($profilerExtensionRealPath, $profilerExtensionDestination);
+        }
 
         // Writing the ini file
         $iniFileName = '98-ddtrace.ini';
@@ -801,6 +809,14 @@ function add_missing_ini_settings($iniFilePath, $settings)
     }
 }
 
+function get_php_major_minor($binary)
+{
+    return execute_or_exit(
+        "Cannot read PHP version",
+        "$binary 'echo PHP_MAJOR_VERSION . \' \' . PGP_MINOR_VERSION'"
+    );
+}
+
 /**
  * Returns array of associative arrays with the following keys:
  *   - name (string): the setting name;
@@ -821,6 +837,12 @@ function get_ini_settings($requestInitHookPath)
             'default' => 'ddtrace.so',
             'commented' => false,
             'description' => 'Enables or disables tracing (set by the installer, do not change it)',
+        ],
+        [
+            'name' => 'zend_extension',
+            'default' => 'datadog-profiling.so',
+            'commented' => true,
+            'description' => 'Enables the profiling module',
         ],
         [
             'name' => 'datadog.trace.request_init_hook',
