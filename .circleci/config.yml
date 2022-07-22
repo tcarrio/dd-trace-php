@@ -1605,6 +1605,7 @@ jobs:
             curl -Lo php5.tar.gz "https://output.circle-artifacts.com/output/job/$JOB_ID/artifacts/0/datadog-php-tracer-1.0.0-nightly.x86_64.tar.gz"
             tar xzf php5.tar.gz
             mv opt/datadog-php/extensions/* extensions/
+            cd extensions && find . -type f -exec sha256sum {} +
       - run:
           name: Build packages
           command: make packages
